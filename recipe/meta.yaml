@@ -1,0 +1,93 @@
+# Conda recipe stub: lammps with libtorch (single OpenMP/BLAS runtime)
+# Submit via conda-forge/staged-recipes once conda-forge pytorch catches up to CUDA 13 / sm_120.
+#
+# This recipe builds LAMMPS with ML-MACE (ACEsuit fork) linked against conda's libtorch,
+# sharing the same OpenMP and BLAS runtime. No pip torch wheel → no dual-runtime clash.
+
+{% set name = "lammps-mace" %}
+{% set version = "2024.08.29" %}  # LAMMPS release date
+{% set mace_commit = "main" %}     # or pin a specific ACEsuit/mace commit
+
+package:
+  name: {{ name }}
+  version: {{ version }}
+
+source:
+  - url: https://github.com/lammps/lammps/archive/refs/tags/stable_{{ version.replace('.', '_') }}.tar.gz
+    sha256: ""  # fill from release
+    folder: lammps
+  - git_url: https://github.com/ACEsuit/mace.git
+    git_rev: {{ mace_commit }}
+    folder: mace
+
+build:
+  number: 0
+  skip: true  # [not linux]
+  script_env:
+    - CUDA_HOME
+
+requirements:
+  build:
+    - {{ compiler('cxx') }}
+    - {{ compiler('cuda') }}
+    - cmake >=3.22
+    - ninja
+    - pkg-config
+  host:
+    - python
+    - pytorch
+    - pytorch-cuda {{ cuda_compiler_version }}  # e.g. 12.4
+    - libtorch
+    - mkl-devel
+    - openblas                                  # fallback if MKL unavailable
+    - libgomp                                   # conda's OpenMP (shared by torch)
+    - mpi4py
+    - openmpi
+  run:
+    - python
+    - pytorch
+    - pytorch-cuda {{ cuda_compiler_version }}
+    - {{ pin_compatible('mkl') }}
+    - libgomp
+
+test:
+  imports:
+    - lammps
+  commands:
+    - lmp -h
+    - python -c "from lammps import lammps; l = lammps(); print(l.version())"
+    # Verify single runtime (no duplicate libgomp/BLAS)
+    - python {{ RECIPE_DIR }}/../single_runtime_check.py $(which lmp)
+
+about:
+  home: https://www.lammps.org
+  license: GPL-2.0-only
+  license_family: GPL
+  license_file: lammps/LICENSE
+  summary: LAMMPS with native pair_mace (ACEsuit), conda torch/OpenMP/BLAS — no dual-runtime clash
+  description: |
+    This build of LAMMPS includes the ML-MACE pair style from ACEsuit, compiled against
+    conda-forge's libtorch. Unlike mixing a pip torch wheel with a separate conda LAMMPS,
+    this package uses a single OpenMP runtime (libgomp) and a single BLAS implementation,
+    eliminating the segfault-in-cblas / "cannot generate safe runtime search path" class of bugs.
+  dev_url: https://github.com/ACEsuit/mace
+
+extra:
+  recipe-maintainers:
+    - your-github-handle  # replace
+
+# Build notes (for feedstock maintainers):
+#
+# 1. The key fix is ensuring torch, LAMMPS, and ML-MACE all link to the *same* libgomp and
+#    the *same* BLAS. Conda's environment solver does this automatically when all packages
+#    come from conda-forge (no pip wheels).
+#
+# 2. If pytorch-cuda lags behind the latest CUDA / newest GPU arch (e.g. sm_120), this
+#    feedstock will also lag. Upstream fix: wait for conda-forge pytorch to catch up, or
+#    build pytorch-cuda locally with the new arch.
+#
+# 3. The test section runs single_runtime_check.py to verify the built `lmp` has exactly
+#    one OpenMP and one BLAS — CI will fail if there's a dual-runtime regression.
+#
+# 4. For mace-torch (Python package) integration, add it to host/run and ensure it imports
+#    without CUDA/OpenMP clashes. The native pair_mace in LAMMPS is separate from mace-torch.
